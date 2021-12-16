@@ -3,11 +3,8 @@
 Streams trades from Binance API, aggregates and delivers as Volume bars (configurable)
     
     Lopez de Prado, Marcos. 2018. Advances in Financial Machine Learning. New York, NY: John Wiley & Sons:
-        2.3.1.3 Volume Bars
-            Volume bars [sample] every time a pre-defined amount of the security’s 
-            units (shares, futures contracts, etc.) have been exchanged.
-            For example, we could sample prices every time a futures contract exchanges 1,000
-            units, regardless of the number of ticks involved.
+        2.3.1.4 Dollar Bars
+            Dollar bars are formed by sampling an observation every time a pre-defined market value is exchanged. 
 '''
 
 import time
