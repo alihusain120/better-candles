@@ -21,6 +21,7 @@ import csv
 import config
 import logging as log
 log.basicConfig(level=log.INFO)
+from threading import Thread
 
 APIKEY = config.APIKEY
 APISECRET = config.SECRET
@@ -41,14 +42,13 @@ class TickBars:
             return ",\n".join([f"{x}:{y}" for x, y in self.__dict__.items()])
 
     def __init__(self, symbol: str='BTCUSDT', tick_threshold: int=1000, to_csv: bool=False):
-        # TODO: Add support for str[] of symbols in place of symbol parameter
-
-        # self.last_time = time.time()
-
-        self.twm = ThreadedWebsocketManager(api_key=APIKEY, api_secret=APISECRET)
 
         with open(os.path.join(sys.path[0], "ticks.txt"), "r") as f:
             self.SYMBOLS = [line.strip() for line in f]
+
+        self.twm = ThreadedWebsocketManager(api_key=APIKEY, api_secret=APISECRET)
+        self.streams = [f"{s.lower()}@trade" for s in self.SYMBOLS]
+        self.stream_error = False
 
         self.TICK_THRESHOLD = tick_threshold # Candle for every {TICK_THRESHOLD} trades that occur on Binance for symbol
 
@@ -104,25 +104,39 @@ class TickBars:
     '''
     
     def handle_message(self, msg):
-        try:
+        if 'data' in msg:
             current_ticker = msg['data']['s']
-        except:
-            print(f"Error processing, message: {msg}")
-            return
-        # assurance
-        assert(current_ticker in self.SYMBOLS)
+          
+            # assurance
+            assert(current_ticker in self.SYMBOLS)
 
-        self.running_trades[current_ticker].append(msg['data'])
+            self.running_trades[current_ticker].append(msg['data'])
 
-        if len(self.running_trades[current_ticker]) >= self.TICK_THRESHOLD:
-            self.create_candle(self.running_trades[current_ticker])
-            self.running_trades[current_ticker].clear()
+            if len(self.running_trades[current_ticker]) >= self.TICK_THRESHOLD:
+                self.create_candle(self.running_trades[current_ticker])
+                self.running_trades[current_ticker].clear()
+
+        else:
+            print(f"Error processing, message: {msg}. Restarting stream.")
+            self.stream_error = True
 
     def stream(self):
         print("Beginning Binance data stream. Ctrl-c to quit.")
         self.twm.start()
-        streams = [f"{s.lower()}@trade" for s in self.SYMBOLS]
-        self.twm.start_multiplex_socket(callback=self.handle_message, streams=streams)
+        
+        self.multiplex = self.twm.start_multiplex_socket(callback=self.handle_message, streams=self.streams)
+
+        stop_trades = Thread(target = self.restart_stream, daemon = True)
+        stop_trades.start()
+
+    def restart_stream(self):
+        while True:
+            time.sleep(1)
+            if self.stream_error == True:
+                self.twm.stop_socket(self.multiplex)
+                time.sleep(5)
+                self.stream_error = False
+                self.multiplex = self.twm.start_multiplex_socket(callback = self.handle_message, streams = self.streams)
 
     def stop_stream(self):
         self.twm.stop()
