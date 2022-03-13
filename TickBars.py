@@ -41,7 +41,7 @@ class TickBars:
         def __str__(self):
             return ",\n".join([f"{x}:{y}" for x, y in self.__dict__.items()])
 
-    def __init__(self, symbol: str='BTCUSDT', tick_threshold: int=1000, to_csv: bool=False):
+    def __init__(self, tick_threshold: int=1000, to_csv: bool=False):
 
         with open(os.path.join(sys.path[0], "ticks.txt"), "r") as f:
             self.SYMBOLS = [line.strip() for line in f]

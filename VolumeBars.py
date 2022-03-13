@@ -19,6 +19,7 @@ import csv
 import config
 import logging as log
 log.basicConfig(level=log.INFO)
+from threading import Thread
 
 APIKEY = config.APIKEY
 APISECRET = config.SECRET
@@ -40,37 +41,44 @@ class VolumeBars:
 
 
     def __init__(self, symbol: str='BTCUSDT', volume_threshold: float=10.0, to_csv: bool=False, csv_filepath: str=''):
-        # TODO: Add support for str[] of symbols in plae of symbol parameter
+
+        with open(os.path.join(sys.path[0], "ticks.txt"), "r") as f:
+            self.SYMBOLS = [line.strip() for line in f]
 
         self.twm = ThreadedWebsocketManager(api_key=APIKEY, api_secret=APISECRET)
-        
-        self.SYMBOL = symbol
+        self.streams = [f"{s.lower()}@trade" for s in self.SYMBOLS]
+        self.stream_error = False
+
         self.VOLUME_THRESHOLD = volume_threshold # Candle sampled at every {vol_threshold} units traded of the base asset
         
-        self.running_trades = []
-        self.running_volume = 0.0
         self.candles = []
+        self.running_trades = {}
+        self.running_volume = {}
+        for s in self.SYMBOLS:
+            self.running_trades[s] = []
+            self.running_volume[s] = 0.0
+            self.candles[s] = []
 
         self.TO_CSV = to_csv
-        self.CSV_PATH = None
         if to_csv:
-            if csv_filepath.endswith('.csv'):
-                self.CSV_PATH = csv_filepath
-            else:
+            self.CSV_PATHS = {}
+            for s in self.SYMBOLS:
                 self.CSV_PATH = f'VolumeBars_{symbol}.csv'
+        
 
-    def add_candle_to_csv(self, candle):
+    def add_candle_to_csv(self, candle, ticker):
+
         log.info(f"Adding candle to csv: {candle}")
 
-        if os.path.exists(self.CSV_PATH):
-            with open(self.CSV_PATH, "a+", newline='') as write_obj:
+        if os.path.exists(self.CSV_PATHS[ticker]):
+            with open(self.CSV_PATHS[ticker], "a+", newline='') as write_obj:
                 csv_writer = csv.DictWriter(write_obj, candle.__dict__.keys())
                 csv_writer.writerow(candle.__dict__)
             log.info(f"Added candle to existing csv.")
 
         else:
             # Write header for file creation
-            with open(self.CSV_PATH, "a+", newline='') as write_obj:
+            with open(self.CSV_PATHS[ticker], "a+", newline='') as write_obj:
                 csv_writer = csv.DictWriter(write_obj, candle.__dict__.keys())
                 csv_writer.writeheader()
                 csv_writer.writerow(candle.__dict__)
@@ -78,43 +86,64 @@ class VolumeBars:
 
 
     def create_candle(self, trades):
+        current_ticker = trades[0]['s']
+        log.info(f"Creating candle for {current_ticker}")
+
         prices = [float(x['p']) for x in trades]
         vol = sum([float(x['q']) for x in trades])
         candle = self.Candle(prices[0], max(prices), min(prices), prices[-1], vol, trades[0]['T'], trades[-1]['T'])
         
         if self.TO_CSV:
-            self.add_candle_to_csv(candle)
+            self.add_candle_to_csv(candle, current_ticker)
 
-        self.candles.append(candle)
+        self.candles[current_ticker].append(candle)
     
     def handle_message(self, msg):
-        self.running_trades.append(msg)
-        self.running_volume += float(msg['q'])
 
-        log.info(f"Trade Ingested at {msg['E']}, p={msg['p']}, q={msg['q']}")
-        if len(self.running_trades) % 50 == 0:
-            log.info(f"{len(self.running_trades)} total trades")
+        if 'data' in msg:
+            current_ticker = msg['data']['s']
+          
+            # assurance
+            assert(current_ticker in self.SYMBOLS)
 
-        if self.running_volume >= self.VOLUME_THRESHOLD:
-            self.create_candle(self.running_trades)
-            self.running_trades.clear()
-            self.running_volume = 0.0
+            self.running_trades[current_ticker].append(msg['data'])
+            self.running_volume[current_ticker] += float(msg['data']['q'])
 
-    def stream(self, symbol: str='BTCUSDT' ,to_csv: bool=False, csv_filepath: str=''):
+            if self.running_volume[current_ticker] >= self.VOLUME_THRESHOLD:
+                self.create_candle(self.running_trades[current_ticker])
+                self.running_trades[current_ticker].clear()
+                self.running_volume[current_ticker] = 0.0
 
-        self.f = None
-        if to_csv:
-            if csv_filepath.endswith('.csv'):
-                f = open(csv_filepath, 'a')
-            else:
-                # TODO: Edit for multiple symbol streaming functionality
-                f = open(f'VolumeBars_{symbol}.csv', 'a')
+        else:
+            print(f"Error processing, message: {msg}. Restarting stream.")
+            self.stream_error = True
 
-        twm = ThreadedWebsocketManager(api_key=APIKEY, api_secret=APISECRET)
-        twm.start()
-        twm.start_trade_socket(callback=self.handle_message, symbol=self.SYMBOL)
+
+    def stream(self):
+
+        print("Beginning Binance data stream. Ctrl-c to quit.")
+        self.twm.start()
         
+        self.multiplex = self.twm.start_multiplex_socket(callback=self.handle_message, streams=self.streams)
 
-if __name__ == "__main__":
+        stop_trades = Thread(target = self.restart_stream, daemon = True)
+        stop_trades.start()
+
+    def restart_stream(self):
+        while True:
+            time.sleep(1)
+            if self.stream_error == True:
+                self.twm.stop_socket(self.multiplex)
+                time.sleep(5)
+                self.stream_error = False
+                self.multiplex = self.twm.start_multiplex_socket(callback = self.handle_message, streams = self.streams)
+
+    def stop_stream(self):
+        self.twm.stop()
+
+def main():
     vb = VolumeBars(to_csv=True)
     vb.stream()
+
+if __name__ == "__main__":
+    main()
